@@ -1,0 +1,26 @@
+# Environment — contains real API keys, never commit
+.env
+
+# Database — local data, not for repo
+Data/intel.db
+
+# Exports — generated output, not for repo
+Exports/
+
+# Logs — local operational logs, not for repo
+Logs/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
