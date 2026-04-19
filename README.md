@@ -7,6 +7,11 @@ Pulls indicators from 8 automated feeds, scores them with corroboration-based co
 routes them through an analyst approval queue, and exports approved indicators as signed
 JSON snapshots.
 
+![Intel Pipeline dashboard — full view](Documentation/Screenshots/intel_full.png)
+
+*Single-page Flask dashboard on port 6001. Feed status strip, manual pull controls,
+export management, and a filterable approval queue.*
+
 ---
 
 ## Features
@@ -24,6 +29,64 @@ JSON snapshots.
   retained with rollback support
 - **Flask dashboard** — dark-theme single-page app on port 6001; feed health strip,
   approval queue with type filtering, export management
+
+---
+
+## Analyst Workflow
+
+### Approval Queue
+
+Every indicator pulled from a feed lands in the approval queue with a `pending` status.
+Analysts filter by type (IP, Domain, Hash, CVE, ASN, TTP, URL) and review each entry
+before it becomes eligible for export.
+
+### Review Panel
+
+![Analyst review modal for a pending CVE](Documentation/Screenshots/review_pannel.png)
+
+The review panel shows the full normalized entry — value, confidence score, evidence
+class, description, source feed, lane (automated / manual), and expiry. Analysts can
+add notes, adjust suggested severity and TLP, and choose **Approve**, **Reject**, or
+**Alert** (flag for immediate attention).
+
+### Search and Filter
+
+![Search filter showing approved GitHub URL indicators](Documentation/Screenshots/search_function.png)
+
+Free-text search across value and source fields, combined with type and status filters,
+enables quick review of specific indicator patterns — here showing approved URL
+indicators hosted on GitHub infrastructure from URLhaus feed pulls.
+
+---
+
+## Export and Verification
+
+![Export snapshots modal with rollback option](Documentation/Screenshots/export_snapshot.png)
+
+Exports produce a timestamped JSON snapshot with a matching SHA256 sidecar. The last
+five snapshots are retained, and any previous snapshot can be rolled back as the
+current export. Each snapshot records entry count, TLP classification, and the full
+hash for verification.
+
+Verify the most recent export:
+
+```
+python verify_export.py
+```
+
+List all retained snapshots:
+
+```
+python verify_export.py --list
+```
+
+Verify a specific snapshot:
+
+```
+python verify_export.py intel_approved_20260410_143022_123456.json
+```
+
+Exit code 0 = verified. Exit code 1 = tampered or missing.
 
 ---
 
@@ -129,32 +192,9 @@ Intel\
 ├── config.example.env          — API key template (commit this, not .env)
 ├── .gitignore
 └── Documentation\
-    └── Intel_Test_Guide.md
+    ├── Intel_Test_Guide.md
+    └── Screenshots\            — Dashboard screenshots used in this README
 ```
-
----
-
-## Export Verification
-
-Verify the most recent export:
-
-```
-python verify_export.py
-```
-
-List all retained snapshots:
-
-```
-python verify_export.py --list
-```
-
-Verify a specific snapshot:
-
-```
-python verify_export.py intel_approved_20260410_143022_123456.json
-```
-
-Exit code 0 = verified. Exit code 1 = tampered or missing.
 
 ---
 
