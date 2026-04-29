@@ -251,3 +251,139 @@ All tests logged in order of execution. Append after every test run — never de
 **Notes:** No issues.
 
 ---
+
+---
+
+## Test 019 — Installed Software Scanner
+**Date:** 2026-04-27
+**File:** `src/scanner.py`
+**Command:** `py -c "from src.scanner import scan_installed_software; scan_installed_software()"`
+**What it tests:** Registry hive scan of 3 HKLM uninstall paths, deduplication on (name.lower(), publisher.lower()), JSON output to SOC\Config\installed_software.json.
+**Result:** PASS
+**Checks:**
+- 132 unique software entries written — correct
+- Key entries present: Adobe Acrobat 26.001.21431, Google Chrome 147.0.7727.116, Microsoft Edge 147.0.3912.86, Microsoft Office Professional Plus 2019 16.0.10417.20117, Git 2.53.0.2, Python 3.12.10 — correct
+- Publisher inconsistencies noted (Microsoft vs Microsoft Corporation vs Microsoft Corporations, Adobe vs Adobe Systems Incorporated, Google vs Google LLC) — expected, registry data is inconsistent. Dual-check matching uses substring not exact match.
+**Notes:** Output path confirmed: `%USERPROFILE%\Desktop\SOC\Config\installed_software.json`. Scanner called at app startup via `scan_installed_software()` in `app.py`.
+
+---
+
+## Test 020 — DB Migration: affected_vendor, affected_product, nvd_versions
+**Date:** 2026-04-27
+**File:** `src/db/database.py`
+**Command:** App restart (migrations run inside `init_db()` on startup)
+**What it tests:** `_run_migrations()` safely adds 3 new columns to `intel_entries` on existing database without touching live data.
+**Result:** PASS
+**Checks:**
+- `affected_vendor TEXT` column added — correct
+- `affected_product TEXT` column added — correct
+- `nvd_versions TEXT` column added — correct
+- All 8661 existing rows unaffected, columns defaulted to NULL — correct
+- Second startup: `ALTER TABLE` statements catch `OperationalError` silently (columns already exist) — correct
+**Notes:** `try/except sqlite3.OperationalError: pass` pattern used per codebase convention. No cursor objects — `conn.execute()` directly throughout.
+
+---
+
+## Test 021 — CISA KEV affected_vendor / affected_product Extraction
+**Date:** 2026-04-27
+**File:** `src/feeds/cisa_kev.py`, `src/db/ingest.py`, `src/normalizer.py`
+**Command:** `run_single_feed('CISA KEV')` via dashboard pull button
+**What it tests:** CISA KEV puller extracts `vendorProject` and `product` fields; normalizer passes them through; ingest layer writes them to the new columns.
+**Result:** PASS
+**Checks:**
+- `affected_vendor` populated from `vuln.get("vendorProject")` — correct
+- `affected_product` populated from `vuln.get("product")` — correct
+- DB rows show e.g. `vendor=Git, product=Git` / `vendor=Google, product=Chrome` / `vendor=Microsoft, product=Windows` — correct
+- Both `normalize_entry()` and `normalize_human_entry()` updated to include fields (human entries set both to None) — correct
+- `ingest_entry()` INSERT and both UPDATE paths include `affected_vendor`/`affected_product` with `COALESCE` — correct
+**Notes:** `nvd_versions` deliberately excluded from ingest update paths — written only by the NVD enrichment feed.
+
+---
+
+## Test 022 — NVD Enrichment Feed Run
+**Date:** 2026-04-27
+**File:** `src/feeds/nvd.py`
+**Command:** Dashboard "Enrich CVEs (NVD)" button → POST /enrich/nvd
+**What it tests:** NVD API v2.0 enrichment feed: installed software dual-check matching, Microsoft/Windows hardcode, API fetch with key, version range storage.
+**Result:** PASS
+**Checks:**
+- Hardcoded (Microsoft/Windows): 173 CVEs marked immediately with `nvd_versions = []`, no API call — correct
+- Enriched (vendor+product matched, API fetched): 37 CVEs with version range data written — correct
+- Skipped (vendor+product not in installed software): 1375 CVEs left with `nvd_versions NULL` — correct
+- Failed: 0
+- NVD_API_KEY loaded via `.env` — correct (50 req/30s tier)
+- Two storage patterns confirmed in DB:
+  - RANGE: `CVE-2025-48384 Git/Git` → `{"versionEndExcluding": "2.43.7", ...}`
+  - EXPLICIT: `CVE-2007-0671 Microsoft/Office` → `{"criteria": "cpe:2.3:a:microsoft:access:2000:...", all range fields null}`
+**Notes:** Enrichment runs synchronously in the Flask request thread — browser holds connection open for full run. Expected behaviour — not a bug. No UX change planned for Phase 2A.
+
+---
+
+## Test 023 — Normalizer Type Severity Ceilings
+**Date:** 2026-04-28
+**File:** `src/normalizer.py`
+**Command:** `py -c "from src.normalizer import compute_effective_severity; ..."`
+**What it tests:** Hard severity caps for ASN (max medium) and TTP (max low) in `compute_effective_severity()`.
+**Result:** PASS
+**Checks:**
+- `compute_effective_severity('asn', 'critical')` → `medium` — correct
+- `compute_effective_severity('ttp', 'medium')` → `low` — correct
+- `compute_effective_severity('ip', 'high')` → `high` (no ceiling for IP) — correct
+**Notes:** Ceilings defined in `TYPE_SEVERITY_CEILING` dict. Only ASN and TTP have ceilings — all other types pass through unchanged.
+
+---
+
+## Test 024 — CVE Severity Gate (Version-Aware Downgrade)
+**Date:** 2026-04-28
+**File:** `src/normalizer.py`
+**Command:** `py -c "from src.normalizer import compute_effective_severity; ..."`
+**What it tests:** `_cve_gate()` via `compute_effective_severity()` — RANGE pattern, EXPLICIT CPE pattern, fail-open cases, Microsoft/Windows hardcode.
+**Result:** PASS
+**Checks:**
+- Chrome CVE (installed 147.0.7727.116, `versionEndExcluding: 86.0.4240.198`): `high` → `medium` — correct (installed version outside vulnerable range)
+- Git CVE (installed 2.53.0.2, `versionEndExcluding: 2.43.7`; vendor=`'Git'` matching publisher `'The Git Development Community'`): `high` → `medium` — correct
+- Microsoft Office EXPLICIT CPE (installed 16.0.10417.20117, CPE version field `2000`): `high` → `medium` — correct (installed version ≠ explicit CPE version)
+- Fail open — `nvd_versions=None` (not yet enriched): `high` → `high` — correct
+- Fail open — `nvd_versions='[]'` (no range data): `high` → `high` — correct
+- Windows hardcoded (`vendor=Microsoft, product=Windows 10`): `high` → `high` — correct (always on endpoint, skip version check)
+**Notes:**
+- Gate is downgrade-only — cannot raise severity.
+- CPE version parsed from criteria string at index 5 of `cpe:2.3:part:vendor:product:VERSION:...`
+- First test run used `vendor='git-scm'` (CPE string vendor) — returned `high` (fail open) because `'git-scm'` is not substring of `'the git development community'`. Fixed test to use actual DB value `vendor='Git'`. Confirmed fail-open behaviour is correct when vendor doesn't match registry publisher.
+- `packaging.version.Version` handles edge cases: `"2000"` parses as `2000.0.0`, `"2000:sp3"` — only field index 5 is taken (`:sp3` is index 6), so comparison is clean.
+
+---
+
+## Test 025 — CVE Gate Option B: Downgrade-Only Across All Base Severities
+**Date:** 2026-04-28
+**File:** `src/normalizer.py`
+**Command:** `py -c "from src.normalizer import compute_effective_severity; ..."`
+**What it tests:** Gate fires on analyst-set `approved_severity` values (Option B design). Confirms downgrade-only: gate can lower high/critical to medium but cannot raise low/info.
+**Result:** PASS
+**Checks:**
+- `approved_severity=high`, version NOT vulnerable → `medium` — correct (downgrade)
+- `approved_severity=critical`, version NOT vulnerable → `medium` — correct (downgrade)
+- `approved_severity=low`, version NOT vulnerable → `low` — correct (no raise — analyst deliberately set low)
+- `approved_severity=high`, version IS vulnerable (Chrome, `versionEndExcluding: 200.0.0`) → `high` — correct (keep)
+**Notes:** Fix applied during this test: original `_cve_gate` returned hardcoded `"medium"` for non-vulnerable versions, which would have raised `low` → `medium`. Fixed to compare against `SEVERITY_VALUES` index and only downgrade if input severity is above medium. Gate is now strictly downgrade-only.
+
+---
+
+## Test 026 — Live Export Schema 1.1 with Option B Gate
+**Date:** 2026-04-28
+**File:** `src/exporter.py`
+**Command:** `py -c "from src.exporter import generate_export; generate_export(...)"`
+**What it tests:** Full export pipeline with schema 1.1: new fields present, gate fires on every export using `approved_severity or suggested_severity` as base, CVE downgrade visible in output.
+**Result:** PASS
+**Checks:**
+- `schema_version: "1.1"` — correct
+- `entry_count: 7097` — correct
+- `description` field present in indicators — correct
+- `affected_vendor` and `affected_product` fields present — correct
+- CVE-2009-0238 (Microsoft/Office, EXPLICIT CPE version `2000`, installed Office 2019 v16.0.10417.20117): export severity `medium` — correct (gate fired, downgraded from `approved_severity=high`)
+- CVE severity distribution: `high: 18, medium: 1, low: 2` — correct (18 Windows/unenriched fail-open, 1 downgraded, 2 low from other feeds)
+- SHA256 sidecar written and verified — correct
+**Notes:** Option B confirmed working. Gate bypassed `approved_severity` set by bulk baseline approval and correctly downgraded based on current enrichment data. The 18 remaining high CVEs are either Microsoft/Windows (hardcoded always-present) or have `nvd_versions = NULL` (not yet enriched, fail-open). These will self-correct as NVD enrichment runs on newly ingested CVEs.
+
+---
+

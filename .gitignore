@@ -3,6 +3,10 @@
 
 # Database — local data, not for repo
 Data/intel.db
+intel.db
+
+# Config — contains local machine data (installed_software.json etc.), never commit
+Config/
 
 # Exports — generated output, not for repo
 Exports/

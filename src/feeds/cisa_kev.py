@@ -36,11 +36,13 @@ class CisaKevFeed(BaseFeed):
                 description = f"{name} — Required action: {required}"
 
             entries.append({
-                "type":  "cve",
-                "value": cve_id,
+                "type":             "cve",
+                "value":            cve_id,
                 "suggested_severity": "high",
-                "evidence_class": "Vulnerability",
-                "description": description,
+                "evidence_class":   "Vulnerability",
+                "description":      description,
+                "affected_vendor":  vuln.get("vendorProject", "").strip(),
+                "affected_product": vuln.get("product", "").strip(),
             })
 
         return entries

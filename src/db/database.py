@@ -51,6 +51,9 @@ def init_db():
             last_reviewed       TEXT,
             engine_action       TEXT,
             description         TEXT,
+            affected_vendor     TEXT,
+            affected_product    TEXT,
+            nvd_versions        TEXT,
             UNIQUE(type, value)
         )
     """)
@@ -119,6 +122,7 @@ def init_db():
         )
     """)
 
+    _run_migrations(conn)
     conn.commit()
     conn.close()
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Database initialised at {DB_PATH}")
@@ -155,6 +159,21 @@ def seed_feed_config():
     conn.commit()
     conn.close()
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Feed configuration seeded.")
+
+
+def _run_migrations(conn):
+    """Add new columns to existing databases. Safe to call on every startup."""
+    migrations = [
+        "ALTER TABLE intel_entries ADD COLUMN affected_vendor  TEXT",
+        "ALTER TABLE intel_entries ADD COLUMN affected_product TEXT",
+        "ALTER TABLE intel_entries ADD COLUMN nvd_versions     TEXT",
+    ]
+    for sql in migrations:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # column already exists
+    conn.commit()
 
 
 # --- Audit log helper ---

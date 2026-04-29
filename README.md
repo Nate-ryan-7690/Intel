@@ -5,7 +5,8 @@ pipeline. Part of the Night's Watch Home SOC Suite.
 
 Pulls indicators from 8 automated feeds, scores them with corroboration-based confidence,
 routes them through an analyst approval queue, and exports approved indicators as signed
-JSON snapshots.
+JSON snapshots. CVE entries are enriched with NVD version range data and compared against
+installed software — export severity reflects whether the endpoint is actually affected.
 
 ![Intel Pipeline dashboard — full view](Documentation/Screenshots/intel_full.png)
 
@@ -19,13 +20,20 @@ export management, and a filterable approval queue.*
 - **8 automated feed pullers** — Tier 1 and Tier 2 sources covering IPs, domains, URLs,
   hashes, CVEs, and TTPs
 - **GreyNoise enrichment** — on-demand IP context during analyst review
+- **Installed software scanner** — reads Windows registry at startup, writes a software
+  inventory used for CVE relevance gating
+- **NVD enrichment** — targeted NVD API v2.0 queries for CVEs where vendor and product
+  match installed software; stores version range data per CVE
+- **CVE severity gate** — export-time version check downgrades CVE severity to `medium`
+  when the installed version falls outside all vulnerable ranges; fails open on missing
+  data; re-evaluated on every export so severity stays current as enrichment data improves
 - **Corroboration confidence model** — confidence rises when independent sources agree;
   same-source repeat pulls never inflate scores
 - **Phase-based confidence decay** — indicators decay in two phases based on type TTL;
   TTPs never expire
 - **Analyst-in-the-loop approval** — all indicators must be reviewed and approved before
   export
-- **TLP-aware export** — JSON snapshots with separate SHA256 sidecar; last 5 snapshots
+- **TLP-aware export** — schema 1.1 JSON snapshots with SHA256 sidecar; last 5 snapshots
   retained with rollback support
 - **Flask dashboard** — dark-theme single-page app on port 6001; feed health strip,
   approval queue with type filtering, export management
@@ -45,9 +53,9 @@ before it becomes eligible for export.
 ![Analyst review modal for a pending CVE](Documentation/Screenshots/review_pannel.png)
 
 The review panel shows the full normalized entry — value, confidence score, evidence
-class, description, source feed, lane (automated / manual), and expiry. Analysts can
-add notes, adjust suggested severity and TLP, and choose **Approve**, **Reject**, or
-**Alert** (flag for immediate attention).
+class, description, affected vendor and product, source feed, lane (automated / manual),
+and expiry. Analysts can add notes, adjust suggested severity and TLP, and choose
+**Approve**, **Reject**, or **Alert** (flag for immediate attention).
 
 ### Search and Filter
 
@@ -59,14 +67,65 @@ indicators hosted on GitHub infrastructure from URLhaus feed pulls.
 
 ---
 
+## CVE Severity Gate
+
+CVE indicators go through a version-aware severity check at export time. The gate uses
+two data sources built during startup and enrichment:
+
+1. **Installed software** (`scanner.py`) — Windows registry scan producing a JSON
+   inventory of installed software with name, publisher, and version
+2. **NVD version ranges** (`feeds/nvd.py`) — targeted NVD API v2.0 queries for CVEs
+   where the CISA KEV vendor and product match an installed package
+
+At export time, `compute_effective_severity()` in `normalizer.py`:
+
+- Applies type ceilings: ASN → max `medium`, TTP → max `low`
+- For CVE entries: compares the installed version against NVD vulnerable ranges
+  - Version is in a vulnerable range → keep severity
+  - Version is outside all ranges → downgrade to `medium`
+  - No enrichment data yet, or product not found → fail open (keep severity)
+  - Microsoft/Windows → always keep severity (every Windows endpoint is affected)
+
+The gate only downgrades — it never raises severity. If an analyst deliberately set a
+lower severity, the gate will not override it upward.
+
+Because the gate fires on every export against current enrichment data, severity in the
+export automatically reflects patching: once a package is updated past a vulnerable range,
+the next export downgrades that CVE without any manual intervention.
+
+---
+
 ## Export and Verification
 
 ![Export snapshots modal with rollback option](Documentation/Screenshots/export_snapshot.png)
 
-Exports produce a timestamped JSON snapshot with a matching SHA256 sidecar. The last
-five snapshots are retained, and any previous snapshot can be rolled back as the
-current export. Each snapshot records entry count, TLP classification, and the full
-hash for verification.
+Exports produce a timestamped schema 1.1 JSON snapshot with a matching SHA256 sidecar.
+The last five snapshots are retained, and any previous snapshot can be rolled back as the
+current export. Each snapshot records entry count, TLP classification, and the full hash
+for verification.
+
+### Export Schema 1.1 Fields
+
+Each indicator in the export includes:
+
+| Field | Description |
+|---|---|
+| `type` | Indicator type (ip, domain, hash, cve, asn, ttp, url) |
+| `value` | Normalized indicator value |
+| `evidence_class` | Infrastructure / Artifact / Vulnerability / Behavior |
+| `confidence` | Aggregated trust score (0–100) |
+| `severity` | Gate-computed effective severity |
+| `tlp` | TLP classification |
+| `engine_action` | Block / Alert / Log |
+| `source_list` | All feeds that reported this indicator |
+| `source_count` | Number of independent sources |
+| `first_seen` / `last_seen` | Timestamps |
+| `expires_at` | Calculated expiry |
+| `lane` | automated or human |
+| `approved_at` / `approved_by` | Approval metadata |
+| `description` | Feed-supplied description or technique name |
+| `affected_vendor` | CVE: vendor from CISA KEV |
+| `affected_product` | CVE: product from CISA KEV |
 
 Verify the most recent export:
 
@@ -83,7 +142,7 @@ python verify_export.py --list
 Verify a specific snapshot:
 
 ```
-python verify_export.py intel_approved_20260410_143022_123456.json
+python verify_export.py intel_export_20260428_185654_287293_standard.json
 ```
 
 Exit code 0 = verified. Exit code 1 = tampered or missing.
@@ -103,7 +162,8 @@ Exit code 0 = verified. Exit code 1 = tampered or missing.
 | ThreatFox | IP/Domain/URL/Hash | 2 | Multi-type threat indicators |
 | AlienVault OTX | IP/Domain/URL/Hash | 2 | Community threat pulses |
 
-GreyNoise is used for enrichment only — not a feed source.
+GreyNoise is used for IP enrichment only — not a bulk feed source.
+NVD is used for CVE version enrichment only — not a bulk feed source.
 
 ---
 
@@ -133,10 +193,11 @@ GreyNoise is used for enrichment only — not a feed source.
 ### Requirements
 
 - Python 3.10+
-- pip packages: `flask`, `requests`, `python-dotenv`
+- Windows (scanner.py uses `winreg`)
+- pip packages: `flask`, `requests`, `python-dotenv`, `packaging`
 
 ```
-pip install flask requests python-dotenv
+pip install flask requests python-dotenv packaging
 ```
 
 ### API Keys
@@ -152,6 +213,7 @@ cp config.example.env .env
 | `ABUSE_CH_API_KEY` | auth.abuse.ch | Yes (MalwareBazaar, URLhaus, ThreatFox, Feodo) |
 | `OTX_API_KEY` | otx.alienvault.com | Yes (OTX) |
 | `GREYNOISE_API_KEY` | greynoise.io | No (leave blank for unauthenticated, 10 lookups/day) |
+| `NVD_API_KEY` | nvd.nist.gov/developers/request-an-api-key | No (recommended — 50 req/30s vs 5 req/30s) |
 
 MITRE ATT&CK, CISA KEV, and Spamhaus require no API key.
 
@@ -165,6 +227,8 @@ Opens a persistent terminal window and starts the Flask server on port 6001.
 Navigate to `http://localhost:6001` in your browser.
 
 The database is created automatically at `Data\intel.db` on first startup.
+The installed software inventory is written to `%USERPROFILE%\Desktop\SOC\Config\installed_software.json`
+on every startup.
 
 ---
 
@@ -176,17 +240,19 @@ Intel\
 │   ├── app\
 │   │   └── app.py              — Flask dashboard (all routes)
 │   ├── db\
-│   │   ├── database.py         — Schema, connection, audit log
+│   │   ├── database.py         — Schema, migrations, connection, audit log
 │   │   └── ingest.py           — Insert / update / corroboration logic
 │   ├── feeds\
 │   │   ├── base.py             — BaseFeed (pull, normalize, ingest, health log)
 │   │   ├── runner.py           — Parallel feed orchestration
-│   │   ├── greynoise.py        — IP enrichment (not a feed)
+│   │   ├── greynoise.py        — IP enrichment (on-demand, not a feed)
+│   │   ├── nvd.py              — CVE version enrichment (on-demand, not a feed)
 │   │   └── [mitre, cisa_kev, spamhaus, malwarebazaar,
 │   │        urlhaus, threatfox, feodo, otx].py
-│   ├── normalizer.py           — Raw to normalized entry, TLP suggestion
+│   ├── normalizer.py           — Raw to normalized entry; type ceilings; CVE severity gate
+│   ├── scanner.py              — Windows registry scan → installed_software.json
 │   ├── decay.py                — Phase-based confidence decay
-│   └── exporter.py             — JSON export, SHA256 sidecar, rollback, pruning
+│   └── exporter.py             — Schema 1.1 JSON export, SHA256 sidecar, rollback, pruning
 ├── verify_export.py            — Standalone export verification tool
 ├── launch.bat                  — Start server (persistent terminal)
 ├── config.example.env          — API key template (commit this, not .env)
@@ -212,6 +278,6 @@ expired -> pending (re-observed by a feed — confidence resets)
 
 ## Part of the Night's Watch Home SOC Suite
 
-This pipeline is Phase 1 of a standalone threat intelligence layer.
-Phase 2 will define the export schema and integration contracts with the SOC
-correlation engine.
+This pipeline is the standalone intel layer (Phase 1 + Phase 2A complete).
+Phase 2B will integrate the export with the SOC correlation engine via the
+SOC dashboard "Update Intel" flow defined in the pipeline design document.

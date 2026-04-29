@@ -21,11 +21,12 @@ import os
 from datetime import datetime, timezone
 
 from src.db.database import get_connection, write_audit
+from src.normalizer import compute_effective_severity
 
 # --- Config ---
 ROOT_PATH      = os.path.join(os.environ["USERPROFILE"], "Desktop", "Intel")
 EXPORTS_DIR    = os.path.join(ROOT_PATH, "Exports")
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 MAX_SNAPSHOTS  = 5
 
 # TLP precedence — higher index = more restrictive
@@ -102,10 +103,11 @@ def generate_export(export_type="standard", performed_by=None):
     rows = conn.execute("""
         SELECT
             type, value, evidence_class, confidence,
-            approved_severity, approved_tlp, suggested_tlp,
+            suggested_severity, approved_severity, approved_tlp, suggested_tlp,
             source_list, source_count,
             first_seen, last_seen, expires_at,
-            engine_action, lane, approved_at, approved_by
+            engine_action, lane, approved_at, approved_by,
+            description, affected_vendor, affected_product, nvd_versions
         FROM intel_entries
         WHERE status = 'approved'
         ORDER BY approved_at DESC
@@ -124,12 +126,25 @@ def generate_export(export_type="standard", performed_by=None):
         tlp = row["approved_tlp"] or row["suggested_tlp"] or "TLP:GREEN"
         tlp_values.append(tlp)
 
+        # Severity: always run type ceilings + CVE gate so the export reflects current
+        # enrichment data. approved_severity is used as the base (analyst's assessment)
+        # if set, otherwise falls back to suggested_severity. Gate can only downgrade —
+        # it will never raise severity above what the analyst or feed assigned.
+        base_severity = row["approved_severity"] or row["suggested_severity"]
+        severity = compute_effective_severity(
+            row["type"],
+            base_severity,
+            nvd_versions=row["nvd_versions"],
+            vendor=row["affected_vendor"],
+            product=row["affected_product"],
+        )
+
         indicators.append({
             "type":             row["type"],
             "value":            row["value"],
             "evidence_class":   row["evidence_class"],
             "confidence":       row["confidence"],
-            "severity":         row["approved_severity"],
+            "severity":         severity,
             "tlp":              tlp,
             "engine_action":    row["engine_action"],
             "source_list":      json.loads(row["source_list"] or "[]"),
@@ -140,6 +155,9 @@ def generate_export(export_type="standard", performed_by=None):
             "lane":             row["lane"],
             "approved_at":      row["approved_at"],
             "approved_by":      row["approved_by"],
+            "description":      row["description"],
+            "affected_vendor":  row["affected_vendor"],
+            "affected_product": row["affected_product"],
         })
 
     export_tlp = _most_restrictive_tlp(tlp_values) if tlp_values else "TLP:WHITE"

@@ -135,7 +135,7 @@ def ingest_entry(normalized_entry, feed_name, tier):
                 first_seen, last_seen,
                 ttl, expires_at, lane, status,
                 approved_at, approved_by, last_reviewed, engine_action,
-                description
+                description, affected_vendor, affected_product
             ) VALUES (
                 :type, :value, :evidence_class, :confidence,
                 :suggested_severity, :approved_severity,
@@ -144,7 +144,7 @@ def ingest_entry(normalized_entry, feed_name, tier):
                 :first_seen, :last_seen,
                 :ttl, :expires_at, :lane, :status,
                 :approved_at, :approved_by, :last_reviewed, :engine_action,
-                :description
+                :description, :affected_vendor, :affected_product
             )
         """, normalized_entry)
         conn.commit()
@@ -181,8 +181,10 @@ def ingest_entry(normalized_entry, feed_name, tier):
                 approved_by     = NULL,
                 last_reviewed   = NULL,
                 suggested_severity = COALESCE(?, suggested_severity),
-                evidence_class  = COALESCE(?, evidence_class),
-                description     = COALESCE(?, description)
+                evidence_class   = COALESCE(?, evidence_class),
+                description      = COALESCE(?, description),
+                affected_vendor  = COALESCE(?, affected_vendor),
+                affected_product = COALESCE(?, affected_product)
             WHERE id = ?
         """, (
             reset_confidence,
@@ -193,6 +195,8 @@ def ingest_entry(normalized_entry, feed_name, tier):
             normalized_entry.get("suggested_severity"),
             normalized_entry.get("evidence_class"),
             normalized_entry.get("description"),
+            normalized_entry.get("affected_vendor"),
+            normalized_entry.get("affected_product"),
             entry_id
         ))
         conn.commit()
@@ -245,8 +249,10 @@ def ingest_entry(normalized_entry, feed_name, tier):
             last_seen       = ?,
             status          = ?,
             suggested_severity = COALESCE(?, suggested_severity),
-            evidence_class  = COALESCE(?, evidence_class),
-            description     = COALESCE(?, description)
+            evidence_class   = COALESCE(?, evidence_class),
+            description      = COALESCE(?, description),
+            affected_vendor  = COALESCE(?, affected_vendor),
+            affected_product = COALESCE(?, affected_product)
         WHERE id = ?
     """, (
         new_confidence,
@@ -257,6 +263,8 @@ def ingest_entry(normalized_entry, feed_name, tier):
         normalized_entry.get("suggested_severity"),
         normalized_entry.get("evidence_class"),
         normalized_entry.get("description"),
+        normalized_entry.get("affected_vendor"),
+        normalized_entry.get("affected_product"),
         entry_id
     ))
     conn.commit()
